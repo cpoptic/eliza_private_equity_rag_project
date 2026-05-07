@@ -1,5 +1,10 @@
 {
   "enabledPlugins": {
     "github@claude-plugins-official": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git commit*)"
+    ]
   }
 }

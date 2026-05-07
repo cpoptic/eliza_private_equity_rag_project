@@ -22,6 +22,19 @@ logger = logging.getLogger(__name__)
 # Sentinel that marks the end of the XBRL blob and start of readable filing text.
 # In practice XBRL data is packed with no whitespace, so the sentinel appears as
 # "UNITED STATESSECURITIES AND EXCHANGE COMMISSION" (zero or more spaces/newlines).
+# Matches Item headers that aren't already at the start of a line.
+# Handles non-breaking spaces (\xa0) used as padding in some filings.
+_ITEM_HEADER_RE = re.compile(
+    r"(?<!\n)(Item\s+(?:1[A-Za-z]?|[2-9]|1[0-6]|7[Aa]?)[\.\s])",
+    re.IGNORECASE,
+)
+
+
+def _normalize_item_headers(text: str) -> str:
+    """Ensure every Item header starts on its own line for the chunker regex."""
+    return _ITEM_HEADER_RE.sub(r"\n\1", text)
+
+
 _XBRL_END_RE = re.compile(
     r"UNITED\s+STATES\s*SECURITIES\s+AND\s+EXCHANGE\s+COMMISSION",
     re.IGNORECASE,
@@ -97,4 +110,5 @@ class FilingParser:
             )
             return after_header.strip()
 
-        return after_header[match.start():].strip()
+        cleaned = after_header[match.start():].strip()
+        return _normalize_item_headers(cleaned)
