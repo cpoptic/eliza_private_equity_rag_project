@@ -1,0 +1,32 @@
+eliza_private_equity_rag_project/
+├── AGENTS.md                          ← OpenCode behavioral contract
+├── DECISIONS.md                       ← 7 architecture decisions with rationale
+├── README.md                          ← setup, run, evaluation notes
+├── pyproject.toml                     ← uv-compatible deps
+├── docker-compose.yml                 ← Chroma + Qdrant + app services
+├── Dockerfile
+├── .env.example
+├── app.py                             ← Streamlit frontend (dark terminal aesthetic)
+├── scripts/
+│   └── build_index.py                 ← CLI with rich progress bars
+├── src/
+│   ├── interfaces/__init__.py         ← ALL ABCs (BaseChunker, BaseEmbedder, etc.)
+│   ├── preprocessing/
+│   │   ├── parser.py                  ← XBRL stripping, header extraction
+│   │   └── chunker.py                 ← Section-aware chunker (Item boundaries)
+│   ├── embedders/__init__.py          ← OpenAIEmbedder + LocalEmbedder + factory
+│   ├── vector_stores/
+│   │   ├── chroma_store.py            ← ChromaDB (embedded or HTTP)
+│   │   ├── qdrant_store.py            ← Qdrant
+│   │   └── __init__.py                ← get_vector_store() factory
+│   ├── retrieval/
+│   │   ├── query_analyzer.py          ← Rule-based: tickers, dates, section hints
+│   │   └── hybrid_retriever.py        ← Dense + BM25 + RRF, per-ticker decomposition
+│   ├── llm/__init__.py                ← LiteLLMClient (one call)
+│   └── pipeline/
+│       ├── rag_pipeline.py            ← RAGPipeline orchestrator
+│       ├── prompt_builder.py          ← v5 template + full iteration log
+│       └── __init__.py                ← build_pipeline() DI factory
+└── tests/
+    ├── test_preprocessing.py          ← 18 tests
+    └── test_retrieval.py              ← 7 tests

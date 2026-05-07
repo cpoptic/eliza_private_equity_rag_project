@@ -1,3 +1,38 @@
+# Corpus data (large binary/text files)
 Candidate-FDE-AI-RAG-Assessment.pdf
 edgar_corpus.zip
 edgar_corpus/
+
+# Environment
+.env
+.env.local
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Vector store data
+.chroma/
+qdrant_storage/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editor temp files
+~$*
+*.tmp
+
+# Claude local settings
+.claude/settings.local.json
+plans/
+
+# OS
+.DS_Store

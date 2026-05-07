@@ -4,4 +4,6 @@ version = "0.1.0"
 description = "Retrieval Augmented Generation RAG pipeline for Eliza, scoped to a small sample of SEC 10-K and 10-Q filings"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "sec-edgar-downloader>=5.1.0",
+]
