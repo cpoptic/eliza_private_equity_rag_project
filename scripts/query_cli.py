@@ -31,13 +31,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 console = Console()
 
 
-def run_query(question: str, show_chunks: bool = False, chunks_only: bool = False) -> None:
+def run_query(
+    question: str, show_chunks: bool = False, chunks_only: bool = False
+) -> None:
     from src.pipeline import build_pipeline
 
     pipeline = build_pipeline()
 
     if pipeline._store.count() == 0:
-        console.print("[red]✗ Index is empty. Run: uv run python scripts/build_index.py[/red]")
+        console.print(
+            "[red]✗ Index is empty. Run: uv run python scripts/build_index.py[/red]"
+        )
         sys.exit(1)
 
     with console.status(f"[dim]Analyzing query…[/dim]"):
@@ -47,14 +51,19 @@ def run_query(question: str, show_chunks: bool = False, chunks_only: bool = Fals
     meta_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
     meta_table.add_column(style="dim")
     meta_table.add_column(style="cyan")
-    meta_table.add_row("Query type", result.context.query_type)
-    meta_table.add_row("Tickers detected", ", ".join(result.context.tickers) or "none")
+    meta_table.add_row("Query type", result.query_context.query_type)
+    meta_table.add_row(
+        "Tickers detected", ", ".join(result.query_context.tickers) or "none"
+    )
     meta_table.add_row(
         "Year range",
-        f"{result.context.year_range[0]}–{result.context.year_range[1]}"
-        if result.context.year_range else "all years",
+        (
+            f"{result.query_context.year_range[0]}–{result.query_context.year_range[1]}"
+            if result.query_context.year_range
+            else "all years"
+        ),
     )
-    meta_table.add_row("Chunks retrieved", str(len(result.retrieved_chunks)))
+    meta_table.add_row("Chunks retrieved", str(len(result.chunks)))
     meta_table.add_row("Latency", f"{result.latency_ms}ms")
     console.print(meta_table)
 
@@ -62,19 +71,23 @@ def run_query(question: str, show_chunks: bool = False, chunks_only: bool = Fals
     if show_chunks or chunks_only:
         console.print()
         chunk_table = Table(
-            "Rank", "Header", "Score", "Method", "Preview",
+            "Rank",
+            "Header",
+            "Score",
+            "Method",
+            "Preview",
             box=box.SIMPLE_HEAVY,
             show_header=True,
             header_style="bold yellow",
             expand=True,
         )
-        for i, chunk_info in enumerate(result.chunks_display, 1):
-            preview = chunk_info["text_preview"][:120].replace("\n", " ")
+        for i, retrieved_chunk in enumerate(result.chunks, 1):
+            preview = retrieved_chunk.chunk.text[:120].replace("\n", " ")
             chunk_table.add_row(
                 str(i),
-                chunk_info["header"],
-                str(chunk_info["score"]),
-                chunk_info["method"],
+                retrieved_chunk.chunk.provenance_header(),
+                f"{retrieved_chunk.score:.3f}",
+                retrieved_chunk.retrieval_method,
                 preview,
             )
         console.print(chunk_table)
@@ -84,12 +97,14 @@ def run_query(question: str, show_chunks: bool = False, chunks_only: bool = Fals
 
     # ── Answer ────────────────────────────────────────────────────────
     console.print()
-    console.print(Panel(
-        Markdown(result.answer),
-        title="[bold yellow]Answer[/bold yellow]",
-        border_style="yellow",
-        padding=(1, 2),
-    ))
+    console.print(
+        Panel(
+            Markdown(result.answer),
+            title="[bold yellow]Answer[/bold yellow]",
+            border_style="yellow",
+            padding=(1, 2),
+        )
+    )
 
 
 def interactive_loop() -> None:
@@ -97,14 +112,18 @@ def interactive_loop() -> None:
 
     pipeline = build_pipeline()
     if pipeline._store.count() == 0:
-        console.print("[red]✗ Index is empty. Run: uv run python scripts/build_index.py[/red]")
+        console.print(
+            "[red]✗ Index is empty. Run: uv run python scripts/build_index.py[/red]"
+        )
         sys.exit(1)
 
-    console.print(Panel(
-        "[bold]SEC Filing Intelligence[/bold] — Interactive Mode\n"
-        "[dim]Commands: 'chunks' to toggle chunk display, 'quit' to exit[/dim]",
-        border_style="yellow",
-    ))
+    console.print(
+        Panel(
+            "[bold]SEC Filing Intelligence[/bold] — Interactive Mode\n"
+            "[dim]Commands: 'chunks' to toggle chunk display, 'quit' to exit[/dim]",
+            border_style="yellow",
+        )
+    )
 
     show_chunks = False
     while True:
@@ -129,15 +148,23 @@ def interactive_loop() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Query the SEC filing RAG pipeline")
     parser.add_argument("question", nargs="?", help="Question to ask")
-    parser.add_argument("--show-chunks", action="store_true", help="Display retrieved chunks")
-    parser.add_argument("--chunks-only", action="store_true", help="Show chunks only, skip LLM call")
-    parser.add_argument("--interactive", "-i", action="store_true", help="Interactive REPL mode")
+    parser.add_argument(
+        "--show-chunks", action="store_true", help="Display retrieved chunks"
+    )
+    parser.add_argument(
+        "--chunks-only", action="store_true", help="Show chunks only, skip LLM call"
+    )
+    parser.add_argument(
+        "--interactive", "-i", action="store_true", help="Interactive REPL mode"
+    )
     args = parser.parse_args()
 
     if args.interactive or not args.question:
         interactive_loop()
     else:
-        run_query(args.question, show_chunks=args.show_chunks, chunks_only=args.chunks_only)
+        run_query(
+            args.question, show_chunks=args.show_chunks, chunks_only=args.chunks_only
+        )
 
 
 if __name__ == "__main__":
