@@ -365,13 +365,14 @@ if run_btn and question.strip():
             result = pipeline.query(question.strip())
 
         # Parse info
+        ctx = result.query_context
         st.markdown(f"""
         <div style='font-family:IBM Plex Mono,monospace;font-size:0.75rem;color:#8b949e;
                     margin-bottom:12px;'>
-            Query type: <span style='color:#f0b429'>{result.context.query_type}</span>
-            &nbsp;·&nbsp; Tickers: <span style='color:#58a6ff'>{', '.join(result.context.tickers) or 'none detected'}</span>
-            &nbsp;·&nbsp; Chunks used: <span style='color:#58a6ff'>{len(result.retrieved_chunks)}</span>
-            &nbsp;·&nbsp; Latency: <span style='color:#3fb950'>{result.latency_ms}ms</span>
+            Query type: <span style='color:#f0b429'>{ctx.query_type}</span>
+            &nbsp;·&nbsp; Tickers: <span style='color:#58a6ff'>{', '.join(ctx.tickers) or 'none detected'}</span>
+            &nbsp;·&nbsp; Chunks used: <span style='color:#58a6ff'>{len(result.chunks)}</span>
+            &nbsp;·&nbsp; Latency: <span style='color:#3fb950'>{result.latency_ms:.0f}ms</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -382,8 +383,17 @@ if run_btn and question.strip():
         )
 
         # Retrieved context expander (transparency panel)
-        with st.expander(f"📎 Retrieved Context — {len(result.retrieved_chunks)} chunks", expanded=False):
-            for chunk_info in result.chunks_display:
+        chunks_display = [
+            {
+                "header": rc.chunk.provenance_header(),
+                "score": f"{rc.score:.3f}",
+                "method": rc.retrieval_method,
+                "text_preview": rc.chunk.text[:300].replace("\n", " "),
+            }
+            for rc in result.chunks
+        ]
+        with st.expander(f"📎 Retrieved Context — {len(result.chunks)} chunks", expanded=False):
+            for chunk_info in chunks_display:
                 st.markdown(f"""
                 <div class="chunk-card">
                     <div class="chunk-header">

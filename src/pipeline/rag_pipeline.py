@@ -198,22 +198,41 @@ class RAGPipeline:
     # Querying
     # ------------------------------------------------------------------
 
-    def query(self, question: str, top_k: int = 12) -> QueryResult:
+    def query(self, question: str, top_k: int = 12, profile: bool = False) -> QueryResult:
         t0 = time.perf_counter()
+        timing: dict[str, float] = {}
 
+        def _elapsed_ms() -> float:
+            return (time.perf_counter() - t0) * 1000
+
+        ts = time.perf_counter()
         context = self._query_analyzer.analyze(question)
-        chunks = self._retriever.retrieve(context, top_k=top_k)
+        if profile:
+            timing["query_analysis_ms"] = (time.perf_counter() - ts) * 1000
 
+        ts = time.perf_counter()
+        chunks = self._retriever.retrieve(context, top_k=top_k)
+        if profile:
+            timing["retrieval_ms"] = (time.perf_counter() - ts) * 1000
+
+        ts = time.perf_counter()
         system = self._prompt_builder.build_system_prompt()
         prompt = self._prompt_builder.build_user_prompt(question, chunks, context.query_type)
-        answer = self._llm.complete(prompt, system=system)
+        if profile:
+            timing["prompt_build_ms"] = (time.perf_counter() - ts) * 1000
 
-        latency_ms = (time.perf_counter() - t0) * 1000
+        ts = time.perf_counter()
+        answer = self._llm.complete(prompt, system=system)
+        if profile:
+            timing["llm_complete_ms"] = (time.perf_counter() - ts) * 1000
+
+        latency_ms = _elapsed_ms()
         return QueryResult(
             answer=answer,
             chunks=chunks,
             query_context=context,
             latency_ms=latency_ms,
+            metadata={"timing": timing} if profile else {},
         )
 
     def is_indexed(self) -> bool:

@@ -2,20 +2,20 @@
 """
 Terminal query interface for the SEC RAG pipeline.
 
-Faster iteration loop than launching Streamlit for every test query.
-Also useful for evaluating retrieval quality by inspecting raw chunks.
-
 Usage:
     uv run python scripts/query_cli.py "What are Apple's risk factors?"
     uv run python scripts/query_cli.py --show-chunks "How has NVIDIA's revenue changed?"
     uv run python scripts/query_cli.py --chunks-only "Compare Apple and Tesla risks"
+    uv run python scripts/query_cli.py --profile "What are Apple's risk factors?"
     uv run python scripts/query_cli.py --interactive
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,9 +30,98 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 console = Console()
 
+_ANSWER_OUTPUTS_DIR = Path(__file__).parent.parent / "answer_outputs"
+
+
+def _sanitize_filename(query: str, max_len: int = 60) -> str:
+    """Convert a query string to a safe filename fragment."""
+    slug = query.lower()
+    slug = re.sub(r"[^\w\s-]", "", slug)
+    slug = re.sub(r"[\s_-]+", "_", slug).strip("_")
+    return slug[:max_len]
+
+
+def _save_output(question: str, result, show_chunks: bool) -> Path:
+    """Write answer + metadata to a timestamped Markdown file."""
+    _ANSWER_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = _sanitize_filename(question)
+    path = _ANSWER_OUTPUTS_DIR / f"{ts}_{slug}.md"
+
+    ctx = result.query_context
+    year_range_str = (
+        f"{ctx.year_range[0]}–{ctx.year_range[1]}"
+        if ctx.year_range
+        else "all years"
+    )
+    tickers_str = ", ".join(ctx.tickers) or "none"
+
+    lines = [
+        f"# Query: {question}",
+        "",
+        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "## Performance",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| Query type | {ctx.query_type} |",
+        f"| Tickers detected | {tickers_str} |",
+        f"| Year range | {year_range_str} |",
+        f"| Section hints | {', '.join(ctx.section_hints) or 'none'} |",
+        f"| Chunks retrieved | {len(result.chunks)} |",
+        f"| Latency | {result.latency_ms:.1f} ms |",
+    ]
+
+    timing = result.metadata.get("timing", {})
+    if timing:
+        lines += [
+            "",
+            "### Substep Timing",
+            "",
+            "| Substep | Time (ms) | % of total |",
+            "|---|---|---|",
+        ]
+        total_timed = sum(timing.values())
+        for substep, ms in sorted(timing.items(), key=lambda x: -x[1]):
+            pct = 100 * ms / result.latency_ms if result.latency_ms else 0
+            lines.append(f"| {substep} | {ms:.1f} | {pct:.1f}% |")
+
+    if ctx.sub_queries and len(ctx.sub_queries) > 1:
+        lines += ["", "### Sub-queries", ""]
+        for sq in ctx.sub_queries:
+            lines.append(f"- {sq}")
+
+    if show_chunks and result.chunks:
+        lines += [
+            "",
+            "## Retrieved Chunks",
+            "",
+            "| Rank | Header | Score | Method |",
+            "|---|---|---|---|",
+        ]
+        for i, rc in enumerate(result.chunks, 1):
+            lines.append(
+                f"| {i} | {rc.chunk.provenance_header()} "
+                f"| {rc.score:.3f} | {rc.retrieval_method} |"
+            )
+
+    lines += [
+        "",
+        "## Answer",
+        "",
+        result.answer,
+    ]
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
 
 def run_query(
-    question: str, show_chunks: bool = False, chunks_only: bool = False
+    question: str,
+    show_chunks: bool = False,
+    chunks_only: bool = False,
+    profile: bool = False,
 ) -> None:
     from src.pipeline import build_pipeline
 
@@ -44,8 +133,8 @@ def run_query(
         )
         sys.exit(1)
 
-    with console.status(f"[dim]Analyzing query…[/dim]"):
-        result = pipeline.query(question)
+    with console.status("[dim]Analyzing query…[/dim]"):
+        result = pipeline.query(question, profile=profile)
 
     # ── Query metadata ────────────────────────────────────────────────
     meta_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
@@ -64,30 +153,54 @@ def run_query(
         ),
     )
     meta_table.add_row("Chunks retrieved", str(len(result.chunks)))
-    meta_table.add_row("Latency", f"{result.latency_ms}ms")
+    meta_table.add_row("Latency", f"{result.latency_ms:.1f}ms")
     console.print(meta_table)
+
+    # ── Profiling breakdown ───────────────────────────────────────────
+    if profile:
+        timing = result.metadata.get("timing", {})
+        if timing:
+            prof_table = Table(
+                "Substep", "Time (ms)", "% of total",
+                box=box.SIMPLE_HEAVY,
+                show_header=True,
+                header_style="bold magenta",
+                title="[bold]Latency Breakdown[/bold]",
+            )
+            for substep, ms in sorted(timing.items(), key=lambda x: -x[1]):
+                pct = 100 * ms / result.latency_ms if result.latency_ms else 0
+                color = "red" if pct > 70 else ("yellow" if pct > 30 else "green")
+                prof_table.add_row(
+                    substep,
+                    f"[{color}]{ms:.1f}[/{color}]",
+                    f"[{color}]{pct:.1f}%[/{color}]",
+                )
+            unaccounted = result.latency_ms - sum(timing.values())
+            prof_table.add_row(
+                "[dim]overhead/other[/dim]",
+                f"[dim]{unaccounted:.1f}[/dim]",
+                f"[dim]{100 * unaccounted / result.latency_ms:.1f}%[/dim]",
+            )
+            console.print()
+            console.print(prof_table)
 
     # ── Retrieved chunks ──────────────────────────────────────────────
     if show_chunks or chunks_only:
         console.print()
         chunk_table = Table(
-            "Rank",
-            "Header",
-            "Score",
-            "Method",
-            "Preview",
+            "Rank", "Header", "Score", "Method", "Preview",
             box=box.SIMPLE_HEAVY,
             show_header=True,
             header_style="bold yellow",
             expand=True,
         )
-        for i, retrieved_chunk in enumerate(result.chunks, 1):
-            preview = retrieved_chunk.chunk.text[:120].replace("\n", " ")
+        for i, rc in enumerate(result.chunks, 1):
+            preview = rc.chunk.text[:120].replace("\n", " ")
             chunk_table.add_row(
                 str(i),
-                retrieved_chunk.chunk.provenance_header(),
-                f"{retrieved_chunk.score:.3f}",
-                retrieved_chunk.retrieval_method,
+                rc.chunk.provenance_header(),
+                f"{rc.score:.3f}",
+                rc.retrieval_method,
                 preview,
             )
         console.print(chunk_table)
@@ -105,6 +218,10 @@ def run_query(
             padding=(1, 2),
         )
     )
+
+    # ── Save output ───────────────────────────────────────────────────
+    output_path = _save_output(question, result, show_chunks)
+    console.print(f"\n[dim]Output saved → {output_path}[/dim]")
 
 
 def interactive_loop() -> None:
@@ -157,13 +274,20 @@ def main() -> None:
     parser.add_argument(
         "--interactive", "-i", action="store_true", help="Interactive REPL mode"
     )
+    parser.add_argument(
+        "--profile", action="store_true",
+        help="Show per-substep latency breakdown (query analysis, retrieval, LLM call, etc.)",
+    )
     args = parser.parse_args()
 
     if args.interactive or not args.question:
         interactive_loop()
     else:
         run_query(
-            args.question, show_chunks=args.show_chunks, chunks_only=args.chunks_only
+            args.question,
+            show_chunks=args.show_chunks,
+            chunks_only=args.chunks_only,
+            profile=args.profile,
         )
 
 
