@@ -1,0 +1,45 @@
+Validating 246 corpus files...
+
+───────────────────────────────────────────────── Chunk Distribution Summary ──────────────────────────────────────────────────
+
+  Metric                  Value
+ ───────────────────────────────
+  Files processed           246
+  Total chunks           19,916
+  Avg chunks / file        81.0
+  Median chunks / file     58.5
+  Min chunks / file           6
+  Max chunks / file         542
+  Std dev                  74.5
+  Full-doc fallbacks          0
+  Parse errors                0
+
+────────────────────────────────────────────────────── Section Coverage ───────────────────────────────────────────────────────
+
+  Item      Section Name                 Hit   Miss   Total   Coverage
+ ──────────────────────────────────────────────────────────────────────
+  Item 1    Business / Financial Stmts   235     11     246        96%
+  Item 2    Properties / MD&A            199     47     246        81%
+  Item 3    Legal / Market Risk          184     62     246        75%
+  Item 4    Controls and Procedures      125     32     157        80%
+  Item 5    Market for Common Equity      53     36      89        60%
+  Item 7    MD&A                          71     18      89        80%
+  Item 8    Financial Statements          72     17      89        81%
+  Item 1A   Risk Factors                 236     10     246        96%
+  Item 1B   Unresolved Staff Comments     54     35      89        61%
+  Item 7A   Market Risk Disclosures       58     31      89        65%
+
+────────────────────────────────────────────── Per-Ticker Chunk Counts (top 10) ───────────────────────────────────────────────
+
+  Ticker   Filings   Total Chunks   Avg / Filing
+ ────────────────────────────────────────────────
+  JNJ           17           1807          106.3
+  MSFT          16           1580           98.8
+  BAC            4           1253          313.2
+  PFE           15           1200           80.0
+  KO            15           1178           78.5
+  TSLA          16           1136           71.0
+  XOM           16           1014           63.4
+  NVDA          16            808           50.5
+  GOOG          14            787           56.2
+  UNH           15            782           52.1

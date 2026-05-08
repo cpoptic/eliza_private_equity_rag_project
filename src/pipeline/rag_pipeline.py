@@ -5,7 +5,9 @@ RAGPipeline: orchestrates the full parse → chunk → embed → index → query
 from __future__ import annotations
 
 import logging
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from src.interfaces import (
     BaseQueryAnalyzer,
     BaseRetriever,
     BaseVectorStore,
+    Chunk,
     QueryContext,
     RetrievedChunk,
 )
@@ -25,6 +28,7 @@ from src.preprocessing.parser import FilingParser
 logger = logging.getLogger(__name__)
 
 _EMBED_BATCH = 100   # chunks per embedding call
+_PARSE_WORKERS = min(8, (os.cpu_count() or 4))   # parallel parse+chunk threads
 
 
 @dataclass
@@ -66,6 +70,9 @@ class RAGPipeline:
         self,
         corpus_dir: str | Path,
         force: bool = False,
+        parse_progress_callback=None,
+        embed_progress_callback=None,
+        # Legacy single callback — still accepted for back-compat
         progress_callback=None,
     ) -> dict:
         corpus_path = Path(corpus_dir)
@@ -78,46 +85,113 @@ class RAGPipeline:
             logger.info("Force re-index: dropping existing collection")
             self._store.delete_collection()
 
-        # Build set of already-indexed chunk IDs for incremental updates
         existing_ids: set[str] = set()
         if not force and self._store.collection_exists():
             existing_ids = {c.chunk_id for c in self._store.get_all_chunks()}
             logger.info("Incremental mode: %d chunks already indexed", len(existing_ids))
 
         total_files = len(txt_files)
-        total_chunks_added = 0
+        parse_errors: list[dict] = []
+        all_new_chunks: list[Chunk] = []
         files_processed = 0
         files_skipped = 0
 
-        for i, filepath in enumerate(txt_files):
+        # ── Phase 1: Parse + chunk (parallel) ────────────────────────────
+        def _parse_chunk(filepath: Path) -> tuple[str, list[Chunk]]:
+            metadata, text = self._parser.parse(filepath)
+            chunks = self._chunker.chunk(text, metadata)
+            new_chunks = [c for c in chunks if c.chunk_id not in existing_ids]
+            return filepath.name, new_chunks
+
+        completed_files = 0
+        with ThreadPoolExecutor(max_workers=_PARSE_WORKERS) as executor:
+            future_map = {executor.submit(_parse_chunk, f): f for f in txt_files}
+            for future in as_completed(future_map):
+                filepath = future_map[future]
+                completed_files += 1
+                try:
+                    name, new_chunks = future.result()
+                    if new_chunks:
+                        all_new_chunks.extend(new_chunks)
+                        files_processed += 1
+                    else:
+                        files_skipped += 1
+                    logger.debug("Parsed %s → %d new chunks", name, len(new_chunks))
+                except Exception as exc:
+                    logger.warning("Parse/chunk error %s: %s", filepath.name, exc)
+                    parse_errors.append({"file": filepath.name, "error": str(exc)})
+
+                # Fire legacy single callback (parse phase)
+                if progress_callback:
+                    progress_callback(completed_files, total_files, filepath.name)
+                if parse_progress_callback:
+                    parse_progress_callback(completed_files, total_files, filepath.name)
+
+        # ── Phase 2: Embed + store (sequential, rate-limit-safe) ─────────
+        total_to_embed = len(all_new_chunks)
+        chunks_added = 0
+        embed_errors: list[dict] = []
+
+        has_with_ids = hasattr(self._embedder, "embed_texts_with_ids")
+        total_batches = max(1, (total_to_embed + _EMBED_BATCH - 1) // _EMBED_BATCH)
+        completed_batches = 0
+
+        for j in range(0, total_to_embed, _EMBED_BATCH):
+            batch = all_new_chunks[j : j + _EMBED_BATCH]
+            texts = [c.text for c in batch]
+            ids = [c.chunk_id for c in batch]
+
             try:
-                metadata, text = self._parser.parse(filepath)
-                chunks = self._chunker.chunk(text, metadata)
-
-                new_chunks = [c for c in chunks if c.chunk_id not in existing_ids]
-                if not new_chunks:
-                    files_skipped += 1
-                else:
-                    for j in range(0, len(new_chunks), _EMBED_BATCH):
-                        batch = new_chunks[j : j + _EMBED_BATCH]
-                        texts = [c.text for c in batch]
-                        embeddings = self._embedder.embed_texts(texts)
+                if has_with_ids:
+                    embeddings, failed_ids = self._embedder.embed_texts_with_ids(texts, ids)
+                    # Filter out failed chunks
+                    if failed_ids:
+                        failed_set = set(failed_ids)
+                        good = [(c, e) for c, e in zip(batch, embeddings)
+                                if c.chunk_id not in failed_set]
+                        # Log with section context
+                        for c in batch:
+                            if c.chunk_id in failed_set:
+                                logger.error(
+                                    "Dropped oversized chunk %s [section: %s, ~%d tokens]",
+                                    c.chunk_id, c.section, c.token_count,
+                                )
+                                embed_errors.append({
+                                    "chunk_id": c.chunk_id,
+                                    "section": c.section,
+                                    "token_count": c.token_count,
+                                })
+                        if good:
+                            good_chunks, good_embs = zip(*good)
+                            self._store.add_chunks(list(good_chunks), list(good_embs))
+                            chunks_added += len(good_chunks)
+                    else:
                         self._store.add_chunks(batch, embeddings)
-                        total_chunks_added += len(batch)
-
-                    files_processed += 1
+                        chunks_added += len(batch)
+                else:
+                    embeddings = self._embedder.embed_texts(texts)
+                    self._store.add_chunks(batch, embeddings)
+                    chunks_added += len(batch)
 
             except Exception as exc:
-                logger.warning("Skipping %s: %s", filepath.name, exc)
+                logger.warning(
+                    "Embedding batch [%d:%d] failed: %s — skipping %d chunks",
+                    j, j + len(batch), exc, len(batch),
+                )
+                embed_errors.append({"batch_start": j, "error": str(exc)})
 
-            if progress_callback:
-                progress_callback(i + 1, total_files, filepath.name)
+            completed_batches += 1
+            if embed_progress_callback:
+                embed_progress_callback(completed_batches, total_batches, len(batch))
 
         return {
             "files_processed": files_processed,
             "files_skipped": files_skipped,
-            "chunks_added": total_chunks_added,
+            "chunks_added": chunks_added,
             "total_indexed": self._store.count(),
+            "parse_errors": parse_errors,
+            "embed_errors": embed_errors,
+            "total_to_embed": total_to_embed,
         }
 
     # ------------------------------------------------------------------

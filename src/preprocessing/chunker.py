@@ -54,6 +54,10 @@ class _FallbackEncoder:
 DEFAULT_CHUNK_TOKEN_LIMIT = 800
 DEFAULT_OVERLAP_TOKENS = 100
 
+# OpenAI text-embedding-3-small hard limit is 8192 tokens.
+# We stay 500 below to leave room for BPE encoding variance.
+EMBED_HARD_MAX_TOKENS = 7700
+
 # Sections we want to index (skip boilerplate-only items)
 _HIGH_VALUE_SECTIONS = {
     "10-K": {"1", "1a", "1b", "2", "3", "5", "7", "7a", "8"},
@@ -294,25 +298,29 @@ class SectionAwareChunker(BaseChunker):
         current_tokens = 0
         chunk_idx = 0
 
-        for para in paragraphs:
-            para = para.strip()
-            if not para:
+        for raw_para in paragraphs:
+            raw_para = raw_para.strip()
+            if not raw_para:
                 continue
-            para_tokens = len(self._enc.encode(para))
 
-            if current_tokens + para_tokens > self.chunk_token_limit and current_paras:
-                # Emit current accumulation
-                chunk_text = "\n\n".join(current_paras)
-                chunks.append(self._make_chunk(chunk_text, section, metadata, chunk_idx))
-                chunk_idx += 1
+            # Hard-split any paragraph that would exceed the embedding API limit,
+            # regardless of chunk_token_limit (handles very long EDGAR table rows).
+            for para in self._hard_split(raw_para):
+                para_tokens = len(self._enc.encode(para))
 
-                # Carry overlap: last N tokens worth of text
-                overlap_text = self._tail_tokens(chunk_text, self.overlap_tokens)
-                current_paras = [overlap_text, para] if overlap_text else [para]
-                current_tokens = len(self._enc.encode("\n\n".join(current_paras)))
-            else:
-                current_paras.append(para)
-                current_tokens += para_tokens
+                if current_tokens + para_tokens > self.chunk_token_limit and current_paras:
+                    # Emit current accumulation
+                    chunk_text = "\n\n".join(current_paras)
+                    chunks.append(self._make_chunk(chunk_text, section, metadata, chunk_idx))
+                    chunk_idx += 1
+
+                    # Carry overlap: last N tokens worth of text
+                    overlap_text = self._tail_tokens(chunk_text, self.overlap_tokens)
+                    current_paras = [overlap_text, para] if overlap_text else [para]
+                    current_tokens = len(self._enc.encode("\n\n".join(current_paras)))
+                else:
+                    current_paras.append(para)
+                    current_tokens += para_tokens
 
         # Emit remainder
         if current_paras:
@@ -328,6 +336,22 @@ class SectionAwareChunker(BaseChunker):
             return text
         tail_tokens = tokens[-n_tokens:]
         return self._enc.decode(tail_tokens)
+
+    def _hard_split(self, text: str) -> list[str]:
+        """
+        Split text that exceeds EMBED_HARD_MAX_TOKENS at token boundaries.
+        Used as a safety net for unusually long EDGAR lines/tables that the
+        normal paragraph-boundary splitting cannot break up.
+        Returns a single-element list for text within the limit (common case).
+        """
+        tokens = self._enc.encode(text)
+        if len(tokens) <= EMBED_HARD_MAX_TOKENS:
+            return [text]
+        parts: list[str] = []
+        for start in range(0, len(tokens), EMBED_HARD_MAX_TOKENS):
+            part = self._enc.decode(tokens[start : start + EMBED_HARD_MAX_TOKENS])
+            parts.append(part)
+        return parts
 
     def _make_chunk(
         self,
