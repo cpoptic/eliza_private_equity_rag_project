@@ -14,7 +14,7 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 sys.path.insert(0, str(Path(__file__).parent))
 
 # ---------------------------------------------------------------------------

@@ -19,3 +19,6 @@ dependencies = [
     "mcp>=1.0",
     "tenacity>=9.1.4",
 ]
+
+[tool.uv]
+venv-path = ".venv"

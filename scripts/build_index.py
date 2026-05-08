@@ -32,7 +32,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 def _setup_logging(logs_dir: Path) -> Path:

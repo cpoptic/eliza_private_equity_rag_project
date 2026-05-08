@@ -25,7 +25,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 
-load_dotenv()
+load_dotenv(override=True)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 console = Console()

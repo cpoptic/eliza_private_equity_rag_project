@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 
 # ── Pricing (per 1M tokens, as of 2025) ──────────────────────────────────────
