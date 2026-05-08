@@ -22,17 +22,22 @@ logger = logging.getLogger(__name__)
 # Sentinel that marks the end of the XBRL blob and start of readable filing text.
 # In practice XBRL data is packed with no whitespace, so the sentinel appears as
 # "UNITED STATESSECURITIES AND EXCHANGE COMMISSION" (zero or more spaces/newlines).
-# Matches Item headers that aren't already at the start of a line.
-# Handles non-breaking spaces (\xa0) used as padding in some filings.
-_ITEM_HEADER_RE = re.compile(
-    r"(?<!\n)(Item\s+(?:1[A-Za-z]?|[2-9]|1[0-6]|7[Aa]?)[\.\s])",
+
+# Normalizes mid-line Item headers in corpus files that use \xa0 padding.
+# Some filings pack headers as "...4Item 1A.\xa0\xa0\xa0\xa0Risk Factors..."
+# with no surrounding newlines. This regex matches those cases and adds \n
+# both before and after the header token so the chunker's ^ anchor fires.
+# The (?!\|) lookahead skips TOC entries like "Item 1A. | Risk Factors | 5".
+_ITEM_NORMALIZE_RE = re.compile(
+    r"(?<!\n)(Item\s+(?:1[A-Za-z]?|[2-9]|1[0-6]|7[Aa]?)\.?)[ \xa0]+(?!\|)",
     re.IGNORECASE,
 )
 
 
 def _normalize_item_headers(text: str) -> str:
-    """Ensure every Item header starts on its own line for the chunker regex."""
-    return _ITEM_HEADER_RE.sub(r"\n\1", text)
+    """Ensure every Item body-section header starts and ends on its own line."""
+    text = text.replace("\xa0", " ")
+    return _ITEM_NORMALIZE_RE.sub(r"\n\1\n", text)
 
 
 _XBRL_END_RE = re.compile(

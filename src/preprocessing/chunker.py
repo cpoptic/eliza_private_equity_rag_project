@@ -83,7 +83,17 @@ _SECTION_HEADER_RE = re.compile(
 # Example: "Item 1A. | Risk Factors | 5"
 _TOC_LINE_RE = re.compile(r"\|.*\|\s*\d+\s*$")
 
-# Known item number → canonical display name
+# Cross-reference detector: the next line after an Item header is a self-reference
+# to the same document ("of this Form 10-K", "in this Form 10-K") rather than
+# actual section content.  "of the Company's Annual Report" is NOT a cross-ref —
+# some companies use that phrasing as a real section header, so we don't filter it.
+_CROSS_REF_RE = re.compile(
+    r"^(?:of|in)\s+this\s+(?:Form|Annual\s+Report|report)\b"
+    r"|^under\s+the\s+heading\b",
+    re.IGNORECASE,
+)
+
+# Known item number → canonical display name (10-K)
 _ITEM_NAMES: dict[str, str] = {
     "1":   "Business",
     "1a":  "Risk Factors",
@@ -100,6 +110,15 @@ _ITEM_NAMES: dict[str, str] = {
     "9a":  "Controls and Procedures",
     "10":  "Directors and Executive Officers",
     "15":  "Exhibits",
+}
+
+# 10-Q item names differ for items 1–4
+_10Q_ITEM_NAMES: dict[str, str] = {
+    "1":   "Financial Statements",
+    "1a":  "Risk Factors",
+    "2":   "MD&A",
+    "3":   "Quantitative and Qualitative Disclosures About Market Risk",
+    "4":   "Controls and Procedures",
 }
 
 
@@ -198,6 +217,15 @@ class SectionAwareChunker(BaseChunker):
             if line_idx is not None and _TOC_LINE_RE.search(lines[line_idx]):
                 continue
 
+            # Pass 3: reject cross-references ("Item 1A\nof this Form 10-K...")
+            # where the title itself or the next line is a back-reference, not content.
+            if _CROSS_REF_RE.match(raw_title):
+                continue
+            if line_idx is not None and line_idx + 1 < len(lines):
+                next_line = lines[line_idx + 1].strip()
+                if _CROSS_REF_RE.match(next_line):
+                    continue
+
             candidates.append((m.start(), item_num, raw_title))
 
         if not candidates:
@@ -216,7 +244,7 @@ class SectionAwareChunker(BaseChunker):
         sections: list[_Section] = []
         for i, (pos, key, raw_title) in enumerate(unique):
             end_pos = unique[i + 1][0] if i + 1 < len(unique) else len(text)
-            title = self._resolve_title(key, raw_title)
+            title = self._resolve_title(key, raw_title, filing_type)
             sections.append(_Section(
                 item_key=key,
                 display_name=f"Item {key.upper()} - {title}",
@@ -228,12 +256,15 @@ class SectionAwareChunker(BaseChunker):
 
         return sections
 
-    def _resolve_title(self, item_key: str, raw_title: str) -> str:
-        """Return canonical title, falling back to raw text from the header match."""
-        canonical = _ITEM_NAMES.get(item_key.lower())
+    def _resolve_title(self, item_key: str, raw_title: str, filing_type: str = "10-K") -> str:
+        """Return canonical title, with filing-type-aware lookup."""
+        key = item_key.lower()
+        if filing_type == "10-Q":
+            canonical = _10Q_ITEM_NAMES.get(key) or _ITEM_NAMES.get(key)
+        else:
+            canonical = _ITEM_NAMES.get(key)
         if canonical:
             return canonical
-        # Clean up raw title: strip trailing punctuation / whitespace
         clean = re.sub(r"[.\s]+$", "", raw_title).strip()
         return clean if clean else f"Item {item_key.upper()}"
 
@@ -252,8 +283,12 @@ class SectionAwareChunker(BaseChunker):
             # Section fits in one chunk
             return [self._make_chunk(section.text, section, metadata, 0)]
 
-        # Split into paragraphs and accumulate
+        # Split into paragraphs and accumulate.
+        # Fall back to single-newline splitting when the corpus uses only \n
+        # (common in EDGAR plain-text filings with no blank-line paragraph breaks).
         paragraphs = re.split(r"\n{2,}", section.text)
+        if len(paragraphs) == 1:
+            paragraphs = section.text.split("\n")
         chunks: list[Chunk] = []
         current_paras: list[str] = []
         current_tokens = 0
