@@ -235,5 +235,27 @@ class RAGPipeline:
             metadata={"timing": timing} if profile else {},
         )
 
+    def stream_query(self, question: str, top_k: int = 12):
+        """
+        Streaming variant of query().
+
+        Runs analysis + retrieval synchronously, then yields answer tokens
+        from the LLM as they arrive. Returns a tuple:
+            (context, chunks, token_generator, retrieval_latency_ms)
+
+        The caller is responsible for collecting the full answer if it needs
+        to save or display it after streaming completes.
+        """
+        t0 = time.perf_counter()
+        context = self._query_analyzer.analyze(question)
+        chunks = self._retriever.retrieve(context, top_k=top_k)
+        retrieval_ms = (time.perf_counter() - t0) * 1000
+
+        system = self._prompt_builder.build_system_prompt()
+        prompt = self._prompt_builder.build_user_prompt(question, chunks, context.query_type)
+
+        token_stream = self._llm.stream_complete(prompt, system=system)
+        return context, chunks, token_stream, retrieval_ms
+
     def is_indexed(self) -> bool:
         return self._store.collection_exists() and self._store.count() > 0

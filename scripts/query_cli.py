@@ -15,11 +15,13 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
@@ -117,13 +119,54 @@ def _save_output(question: str, result, show_chunks: bool) -> Path:
     return path
 
 
+def _print_meta(question: str, context, chunks: list, latency_ms: float) -> None:
+    meta_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
+    meta_table.add_column(style="dim")
+    meta_table.add_column(style="cyan")
+    meta_table.add_row("Query type", context.query_type)
+    meta_table.add_row("Tickers detected", ", ".join(context.tickers) or "none")
+    meta_table.add_row(
+        "Year range",
+        (
+            f"{context.year_range[0]}–{context.year_range[1]}"
+            if context.year_range
+            else "all years"
+        ),
+    )
+    meta_table.add_row("Chunks retrieved", str(len(chunks)))
+    meta_table.add_row("Latency", f"{latency_ms:.1f}ms")
+    console.print(meta_table)
+
+
+def _print_chunks(chunks: list) -> None:
+    chunk_table = Table(
+        "Rank", "Header", "Score", "Method", "Preview",
+        box=box.SIMPLE_HEAVY,
+        show_header=True,
+        header_style="bold yellow",
+        expand=True,
+    )
+    for i, rc in enumerate(chunks, 1):
+        preview = rc.chunk.text[:120].replace("\n", " ")
+        chunk_table.add_row(
+            str(i),
+            rc.chunk.provenance_header(),
+            f"{rc.score:.3f}",
+            rc.retrieval_method,
+            preview,
+        )
+    console.print(chunk_table)
+
+
 def run_query(
     question: str,
     show_chunks: bool = False,
     chunks_only: bool = False,
     profile: bool = False,
+    no_stream: bool = False,
 ) -> None:
     from src.pipeline import build_pipeline
+    from src.pipeline.rag_pipeline import QueryResult
 
     pipeline = build_pipeline()
 
@@ -133,95 +176,112 @@ def run_query(
         )
         sys.exit(1)
 
-    with console.status("[dim]Analyzing query…[/dim]"):
-        result = pipeline.query(question, profile=profile)
+    # ── Non-streaming path (used with --profile or --no-stream) ──────
+    if no_stream or profile:
+        with console.status("[dim]Analyzing query…[/dim]"):
+            result = pipeline.query(question, profile=profile)
 
-    # ── Query metadata ────────────────────────────────────────────────
-    meta_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
-    meta_table.add_column(style="dim")
-    meta_table.add_column(style="cyan")
-    meta_table.add_row("Query type", result.query_context.query_type)
-    meta_table.add_row(
-        "Tickers detected", ", ".join(result.query_context.tickers) or "none"
-    )
-    meta_table.add_row(
-        "Year range",
-        (
-            f"{result.query_context.year_range[0]}–{result.query_context.year_range[1]}"
-            if result.query_context.year_range
-            else "all years"
-        ),
-    )
-    meta_table.add_row("Chunks retrieved", str(len(result.chunks)))
-    meta_table.add_row("Latency", f"{result.latency_ms:.1f}ms")
-    console.print(meta_table)
+        _print_meta(question, result.query_context, result.chunks, result.latency_ms)
 
-    # ── Profiling breakdown ───────────────────────────────────────────
-    if profile:
-        timing = result.metadata.get("timing", {})
-        if timing:
-            prof_table = Table(
-                "Substep", "Time (ms)", "% of total",
-                box=box.SIMPLE_HEAVY,
-                show_header=True,
-                header_style="bold magenta",
-                title="[bold]Latency Breakdown[/bold]",
-            )
-            for substep, ms in sorted(timing.items(), key=lambda x: -x[1]):
-                pct = 100 * ms / result.latency_ms if result.latency_ms else 0
-                color = "red" if pct > 70 else ("yellow" if pct > 30 else "green")
-                prof_table.add_row(
-                    substep,
-                    f"[{color}]{ms:.1f}[/{color}]",
-                    f"[{color}]{pct:.1f}%[/{color}]",
+        if profile:
+            timing = result.metadata.get("timing", {})
+            if timing:
+                prof_table = Table(
+                    "Substep", "Time (ms)", "% of total",
+                    box=box.SIMPLE_HEAVY,
+                    show_header=True,
+                    header_style="bold magenta",
+                    title="[bold]Latency Breakdown[/bold]",
                 )
-            unaccounted = result.latency_ms - sum(timing.values())
-            prof_table.add_row(
-                "[dim]overhead/other[/dim]",
-                f"[dim]{unaccounted:.1f}[/dim]",
-                f"[dim]{100 * unaccounted / result.latency_ms:.1f}%[/dim]",
-            )
-            console.print()
-            console.print(prof_table)
+                for substep, ms in sorted(timing.items(), key=lambda x: -x[1]):
+                    pct = 100 * ms / result.latency_ms if result.latency_ms else 0
+                    color = "red" if pct > 70 else ("yellow" if pct > 30 else "green")
+                    prof_table.add_row(
+                        substep,
+                        f"[{color}]{ms:.1f}[/{color}]",
+                        f"[{color}]{pct:.1f}%[/{color}]",
+                    )
+                unaccounted = result.latency_ms - sum(timing.values())
+                prof_table.add_row(
+                    "[dim]overhead/other[/dim]",
+                    f"[dim]{unaccounted:.1f}[/dim]",
+                    f"[dim]{100 * unaccounted / result.latency_ms:.1f}%[/dim]",
+                )
+                console.print()
+                console.print(prof_table)
 
-    # ── Retrieved chunks ──────────────────────────────────────────────
+        if show_chunks or chunks_only:
+            console.print()
+            _print_chunks(result.chunks)
+
+        if chunks_only:
+            return
+
+        console.print()
+        console.print(
+            Panel(
+                Markdown(result.answer),
+                title="[bold yellow]Answer[/bold yellow]",
+                border_style="yellow",
+                padding=(1, 2),
+            )
+        )
+        output_path = _save_output(question, result, show_chunks)
+        console.print(f"\n[dim]Output saved → {output_path}[/dim]")
+        return
+
+    # ── Streaming path (default) ──────────────────────────────────────
+    with console.status("[dim]Retrieving context…[/dim]"):
+        context, chunks, token_stream, retrieval_ms = pipeline.stream_query(question)
+
+    _print_meta(question, context, chunks, retrieval_ms)
+
     if show_chunks or chunks_only:
         console.print()
-        chunk_table = Table(
-            "Rank", "Header", "Score", "Method", "Preview",
-            box=box.SIMPLE_HEAVY,
-            show_header=True,
-            header_style="bold yellow",
-            expand=True,
-        )
-        for i, rc in enumerate(result.chunks, 1):
-            preview = rc.chunk.text[:120].replace("\n", " ")
-            chunk_table.add_row(
-                str(i),
-                rc.chunk.provenance_header(),
-                f"{rc.score:.3f}",
-                rc.retrieval_method,
-                preview,
-            )
-        console.print(chunk_table)
+        _print_chunks(chunks)
 
     if chunks_only:
         return
 
-    # ── Answer ────────────────────────────────────────────────────────
+    # Stream the answer token by token inside a Live panel
     console.print()
-    console.print(
-        Panel(
-            Markdown(result.answer),
-            title="[bold yellow]Answer[/bold yellow]",
-            border_style="yellow",
-            padding=(1, 2),
-        )
-    )
+    answer_parts: list[str] = []
+    t_llm_start = time.perf_counter()
 
-    # ── Save output ───────────────────────────────────────────────────
-    output_path = _save_output(question, result, show_chunks)
-    console.print(f"\n[dim]Output saved → {output_path}[/dim]")
+    with Live(
+        Panel("", title="[bold yellow]Answer[/bold yellow]", border_style="yellow", padding=(1, 2)),
+        console=console,
+        refresh_per_second=12,
+        vertical_overflow="visible",
+    ) as live:
+        for token in token_stream:
+            answer_parts.append(token)
+            accumulated = "".join(answer_parts)
+            live.update(
+                Panel(
+                    Markdown(accumulated),
+                    title="[bold yellow]Answer[/bold yellow]",
+                    border_style="yellow",
+                    padding=(1, 2),
+                )
+            )
+
+    llm_ms = (time.perf_counter() - t_llm_start) * 1000
+    total_ms = retrieval_ms + llm_ms
+    full_answer = "".join(answer_parts)
+
+    console.print(f"[dim]  ↳ retrieval {retrieval_ms:.0f}ms · llm {llm_ms:.0f}ms · total {total_ms:.0f}ms[/dim]")
+
+    # Build a QueryResult-compatible object for the save helper
+    class _StreamResult:
+        answer = full_answer
+        query_context = context
+        chunks = chunks
+        latency_ms = total_ms
+        metadata: dict = {}
+
+    output_path = _save_output(question, _StreamResult(), show_chunks)
+    console.print(f"[dim]Output saved → {output_path}[/dim]")
 
 
 def interactive_loop() -> None:
@@ -259,7 +319,7 @@ def interactive_loop() -> None:
             console.print(f"[dim]Chunk display: {'ON' if show_chunks else 'OFF'}[/dim]")
             continue
 
-        run_query(question, show_chunks=show_chunks)
+        run_query(question, show_chunks=show_chunks, no_stream=False)
 
 
 def main() -> None:
@@ -276,7 +336,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--profile", action="store_true",
-        help="Show per-substep latency breakdown (query analysis, retrieval, LLM call, etc.)",
+        help="Show per-substep latency breakdown (disables streaming)",
+    )
+    parser.add_argument(
+        "--no-stream", action="store_true",
+        help="Disable streaming and wait for the full response before printing",
     )
     args = parser.parse_args()
 
@@ -288,6 +352,7 @@ def main() -> None:
             show_chunks=args.show_chunks,
             chunks_only=args.chunks_only,
             profile=args.profile,
+            no_stream=args.no_stream,
         )
 
 
